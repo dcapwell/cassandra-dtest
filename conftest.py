@@ -1,4 +1,5 @@
 import copy
+import collections
 import inspect
 import logging
 import os
@@ -374,10 +375,30 @@ def loose_version_compare(a, b):
 
 
 def _skip_msg(current_running_version, since_version, max_version):
-    if loose_version_compare(current_running_version, since_version) < 0:
+    if isinstance(since_version, collections.Sequence):
+        previous = None
+        since_version.sort()
+
+        for i in range(1, len(since_version) + 1):
+            sv = since_version[-i]
+            if loose_version_compare(current_running_version, sv) >= 0:
+                if not previous:
+                    if max_version and loose_version_compare(current_running_version, max_version) > 0:
+                        return "%s > %s" % (current_running_version, max_version)
+                    return None
+
+                if loose_version_compare(current_running_version, previous) < 0:
+                    return None
+
+            previous = LooseVersion('.'.join([str(s) for s in sv.version[:-1]]))
+
+        # no matches found, so fail
         return "%s < %s" % (current_running_version, since_version)
-    if max_version and loose_version_compare(current_running_version, max_version) > 0:
-        return "%s > %s" % (current_running_version, max_version)
+    else:
+        if loose_version_compare(current_running_version, since_version) < 0:
+            return "%s < %s" % (current_running_version, since_version)
+        if max_version and loose_version_compare(current_running_version, max_version) > 0:
+            return "%s > %s" % (current_running_version, max_version)
 
 
 @pytest.fixture(autouse=True)
@@ -388,8 +409,11 @@ def fixture_since(request, fixture_dtest_setup):
         if max_version_str:
             max_version = LooseVersion(max_version_str)
 
-        since_str = request.node.get_closest_marker('since').args[0]
-        since = LooseVersion(since_str)
+        since_str_or_list = request.node.get_closest_marker('since').args[0]
+        if not isinstance(since_str_or_list, str) and isinstance(since_str_or_list, collections.Sequence):
+            since = [LooseVersion(since_str) for since_str in since_str_or_list]
+        else:
+            since = LooseVersion(since_str_or_list)
         # For upgrade tests don't run the test if any of the involved versions
         # are excluded by the annotation
         if hasattr(request.cls, "UPGRADE_PATH"):
@@ -514,7 +538,9 @@ def pytest_collection_modifyitems(items, config):
                 logger.info("SKIP: Deselecting test %s as the test requires vnodes to be disabled. To run this test, "
                       "re-run without the --use-vnodes command line argument" % item.name)
 
-        if item.get_closest_marker("vnodes"):
+        # include ported_to_in_jvm when doing the vnode check as tests ported to jvm-dtest
+        # do not support vnode, so these tests still need to run, only on vnode though
+        if item.get_closest_marker("vnodes") or item.get_closest_marker("ported_to_in_jvm"):
             if not config.getoption("--use-vnodes"):
                 deselect_test = True
                 logger.info("SKIP: Deselecting test %s as the test requires vnodes to be enabled. To run this test, "
